@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { supabase } from "./supabaseClient";
 
 const styles = `
   @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap');
@@ -642,26 +643,72 @@ function AuthPage({ intakeData, onAuthenticated }) {
   const updReg = (k, v) => setRegForm(f => ({ ...f, [k]: v }));
   const updLogin = (k, v) => setLoginForm(f => ({ ...f, [k]: v }));
 
-  const handleRegister = () => {
+const handleRegister = async () => {
     const errs = validatePassword(regForm.password);
     if (errs.length) { setError(errs[0]); return; }
     if (regForm.password !== regForm.confirmPassword) { setError("Passwords do not match."); return; }
     setError("");
-    // TODO: supabase.auth.signUp({ email: intakeData.email, password: regForm.password })
+
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: intakeData.email,
+      password: regForm.password,
+    });
+
+    if (signUpError) {
+      setError(signUpError.message);
+      return;
+    }
+
+    await supabase.from("patients").insert({
+      email: intakeData.email,
+      first_name: intakeData.firstName,
+      last_name: intakeData.lastName,
+      phone: intakeData.phone,
+    });
+
     onAuthenticated({ email: intakeData.email, firstName: intakeData.firstName, lastName: intakeData.lastName });
   };
 
-  const handlePasswordSignIn = () => {
+const handlePasswordSignIn = async () => {
     if (!loginForm.email || !loginForm.password) { setError("Please enter your email and password."); return; }
     setError("");
-    // TODO: supabase.auth.signInWithPassword({ email: loginForm.email, password: loginForm.password })
-    onAuthenticated({ email: loginForm.email, firstName: "", lastName: "" });
+
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      email: loginForm.email,
+      password: loginForm.password,
+    });
+
+    if (signInError) {
+      setError(signInError.message);
+      return;
+    }
+
+    const { data: patientData } = await supabase
+      .from("patients")
+      .select("*")
+      .eq("email", loginForm.email)
+      .single();
+
+    onAuthenticated({
+      email: loginForm.email,
+      firstName: patientData?.first_name || "",
+      lastName: patientData?.last_name || "",
+    });
   };
 
-  const handleMagicLink = () => {
+  const handleMagicLink = async () => {
     if (!magicEmail) return;
+
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email: magicEmail,
+    });
+
+    if (otpError) {
+      setError(otpError.message);
+      return;
+    }
+
     setMagicSent(true);
-    // TODO: supabase.auth.signInWithOtp({ email: magicEmail })
   };
 
   return (
@@ -763,17 +810,36 @@ function PatientPortal({ user, intakeData, onApprovalResult, onEobReview, onSign
     true,
   ][uwStep];
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setSubmitting(true);
-    setTimeout(() => {
-      const result = runEobUnderwriting({ ...uwForm, eobVerifiedAmount: uwForm.eobAmount, balanceOwed: intakeData.balanceOwed });
-      setSubmitting(false);
-      if (result.decision === "eob_review") {
-        onEobReview(result, intakeData);
-      } else {
-        onApprovalResult(result, intakeData, null);
-      }
-    }, 2200);
+
+    const result = runEobUnderwriting({ ...uwForm, eobVerifiedAmount: uwForm.eobAmount, balanceOwed: intakeData.balanceOwed });
+
+    const { data: patientData } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("email", user.email)
+      .single();
+
+    await supabase.from("applications").insert({
+      patient_id: patientData?.id,
+      balance_owed: parseFloat(intakeData.balanceOwed),
+      care_description: intakeData.careDescription,
+      decision: result.decision,
+      approved_amount: result.approvedAmount ? parseFloat(result.approvedAmount) : null,
+      apr: result.apr,
+      term: result.term,
+      monthly_payment: result.monthlyPayment ? parseFloat(result.monthlyPayment) : null,
+      status: result.decision,
+    });
+
+    setSubmitting(false);
+
+    if (result.decision === "eob_review") {
+      onEobReview(result, intakeData);
+    } else {
+      onApprovalResult(result, intakeData, null);
+    }
   };
 
   const initials = (user.firstName?.[0] || user.email?.[0] || "P").toUpperCase();
@@ -2803,19 +2869,46 @@ function PatientAccountLogin({ onAuthenticated }) {
   const [error, setError] = useState("");
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const handlePasswordSignIn = () => {
+  const handlePasswordSignIn = async () => {
     if (!form.email || !form.password) { setError("Please enter your email and password."); return; }
     setError("");
-    // TODO: supabase.auth.signInWithPassword({ email: form.email, password: form.password })
-    onAuthenticated({ email: form.email, firstName: "Maria", lastName: "Lopez" });
+
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      email: form.email,
+      password: form.password,
+    });
+
+    if (signInError) {
+      setError(signInError.message);
+      return;
+    }
+
+    const { data: patientData } = await supabase
+      .from("patients")
+      .select("*")
+      .eq("email", form.email)
+      .single();
+
+    onAuthenticated({
+      email: form.email,
+      firstName: patientData?.first_name || "",
+      lastName: patientData?.last_name || "",
+    });
   };
 
-  const handleMagicLink = () => {
+  const handleMagicLink = async () => {
     if (!magicEmail) return;
-    const link = generateMagicLink(magicEmail);
-    setMagicLink(link);
+
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email: magicEmail,
+    });
+
+    if (otpError) {
+      setError(otpError.message);
+      return;
+    }
+
     setMagicSent(true);
-    // TODO: supabase.auth.signInWithOtp({ email: magicEmail })
   };
 
   const handleCopy = () => {
@@ -3564,7 +3657,15 @@ export default function App() {
   const handleAcceptOffer = () => setPage("esign");
   const handleDeclineOffer = () => setPage("home");
   const handleOfferSigned = () => setPage("offer-accepted");
-  const handleSignOut = () => { setAuthUser(null); setIntakeData(null); setMagicLink(""); setApprovalResult(null); setPage("home"); };
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setAuthUser(null);
+    setIntakeData(null);
+    setMagicLink("");
+    setApprovalResult(null);
+    setApprovalPlan(null);
+    setPage("home");
+  };
   const handleStartOver = () => { setIntakeData(null); setMagicLink(""); setApprovalResult(null); setAuthUser(null); setPage("home"); };
 
   const handleProviderSignIn = (user) => { setProviderUser(user); setProviderPage("dashboard"); };
