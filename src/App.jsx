@@ -360,7 +360,7 @@ function formatSSN(value) {
 function formatIncome(value) {
   const digits = value.replace(/[^0-9]/g, "");
   if (!digits) return "";
-  return parseInt(digits, 10).toLocaleString("en-US");
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 // ─── ORIGINATION FEE TIERS ─────────────────────────────────────────────────────
