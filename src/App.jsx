@@ -510,7 +510,7 @@ function IntakeForm({ onSubmit }) {
         <div className="form-row">
           <div className="form-group">
             <label>Estimated Balance Owed ($) *</label>
-            <div className="input-prefix"><span>$</span><input type="number" placeholder="0.00" value={form.balanceOwed} onChange={e => upd("balanceOwed", e.target.value)} /></div>
+            <div className="input-prefix"><span>$</span><input type="text" inputMode="numeric" placeholder="0" value={form.balanceOwed} onChange={e => upd("balanceOwed", formatIncome(e.target.value))} /></div>
             <div className="helper-text">Include copays, deductibles, or self-pay amounts</div>
           </div>
           <div className="form-group"><label>Provider / Practice Name</label><input placeholder="e.g. Sunrise Health Clinic" value={form.provider} onChange={e => upd("provider", e.target.value)} /></div>
@@ -991,7 +991,7 @@ function PatientPortal({ user, intakeData, onApprovalResult, onEobReview, onSign
 
                 <div className="form-group">
                   <label>Amount Shown on EOB / Statement ($) *</label>
-                  <div className="input-prefix"><span>$</span><input type="number" placeholder="0.00" value={uwForm.eobAmount} onChange={e => upd("eobAmount", e.target.value)} /></div>
+                  <div className="input-prefix"><span>$</span><input type="text" inputMode="numeric" placeholder="0" value={uwForm.eobAmount} onChange={e => upd("eobAmount", formatIncome(e.target.value))} /></div>
                   <div className="helper-text">This is the amount our team will verify against your uploaded document.</div>
                 </div>
 
@@ -2228,7 +2228,7 @@ function ReferPatientPage({ providerUser }) {
             <div className="form-group"><label>Patient Email</label><input placeholder="patient@email.com" value={refForm.email} onChange={e => updRef("email", e.target.value)} /></div>
           </div>
           <div className="form-row">
-            <div className="form-group"><label>Balance Owed ($)</label><div className="input-prefix"><span>$</span><input type="number" placeholder="0.00" value={refForm.balance} onChange={e => updRef("balance", e.target.value)} /></div></div>
+            <div className="form-group"><label>Balance Owed ($)</label><div className="input-prefix"><span>$</span><input type="text" inputMode="numeric" placeholder="0" value={refForm.balance} onChange={e => updRef("balance", formatIncome(e.target.value))} /></div></div>
             <div className="form-group"><label>Description of Care *</label><input placeholder="e.g. dental, PT, behavioral health..." value={refForm.careDescription} onChange={e => updRef("careDescription", e.target.value)} /></div>
           </div>
           <div className="helper-text" style={{ marginBottom: 16 }}>* Required. Phone needed for text, email needed for email link.</div>
@@ -3176,7 +3176,7 @@ function PatientAccountPortal({ user, onSignOut, onRequestFinancing }) {
                       <label>Payment Amount ($)</label>
                       <div className="input-prefix">
                         <span>$</span>
-                        <input type="number" placeholder={paymentPlan ? String(paymentPlan.monthlyPayment) : "0.00"} value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+                        <input type="text" inputMode="numeric" placeholder={paymentPlan ? String(paymentPlan.monthlyPayment) : "0"} value={payAmount} onChange={e => setPayAmount(formatIncome(e.target.value))} />
                       </div>
                       {paymentPlan && <div className="helper-text">Minimum payment: ${paymentPlan.monthlyPayment} · Remaining: ${paymentPlan.remaining.toLocaleString()}</div>}
                     </div>
