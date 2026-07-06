@@ -2008,19 +2008,39 @@ function ProviderLogin({ onAuthenticated }) {
   const [error, setError] = useState("");
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const handlePasswordSignIn = () => {
+  const handlePasswordSignIn = async () => {
     if (!form.email || !form.password) { setError("Please enter your email and password."); return; }
     setError("");
-    // TODO: supabase.auth.signInWithPassword({ email: form.email, password: form.password })
-    onAuthenticated({ email: form.email, practiceName: "Sunrise Health Clinic" });
+
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      email: form.email,
+      password: form.password,
+    });
+
+    if (signInError) { setError(signInError.message); return; }
+
+    const { data: providerData } = await supabase
+      .from("providers")
+      .select("*")
+      .eq("email", form.email)
+      .single();
+
+    onAuthenticated({
+      email: form.email,
+      practiceName: providerData?.practice_name || "Your Practice",
+    });
   };
 
-  const handleMagicLink = () => {
+  const handleMagicLink = async () => {
     if (!magicEmail) return;
-    const link = generateMagicLink(magicEmail);
-    setMagicLink(link);
+
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email: magicEmail,
+    });
+
+    if (otpError) { setError(otpError.message); return; }
+
     setMagicSent(true);
-    // TODO: supabase.auth.signInWithOtp({ email: magicEmail })
   };
 
   const handleCopy = () => {
@@ -2774,20 +2794,33 @@ Welcome aboard.
 
 — The Rubix Team`;
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const errs = validatePassword(form.password);
     if (errs.length) { setError(errs[0]); return; }
     if (form.password !== form.confirmPassword) { setError("Passwords do not match."); return; }
     setError("");
     setSubmitting(true);
-    // TODO: supabase.auth.signUp({ email: form.email, password: form.password }) + create provider record
+
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: form.email,
+      password: form.password,
+    });
+
+    if (signUpError) { setError(signUpError.message); setSubmitting(false); return; }
+
+    await supabase.from("providers").insert({
+      email: form.email,
+      practice_name: form.practiceName,
+      contact_name: form.contactName,
+      phone: form.phone,
+      specialty: form.specialty,
+    });
+
+    setSubmitting(false);
+    setShowEmail(true);
     setTimeout(() => {
-      setSubmitting(false);
-      setShowEmail(true);
-      setTimeout(() => {
-        onRegistered({ email: form.email, practiceName: form.practiceName, contactName: form.contactName });
-      }, 2000);
-    }, 1200);
+      onRegistered({ email: form.email, practiceName: form.practiceName, contactName: form.contactName });
+    }, 2000);
   };
 
   return (
