@@ -482,8 +482,16 @@ function runEobUnderwriting(data) {
 
 // ─── INTAKE FORM (pre-auth) ───────────────────────────────────────────────────
 
-function IntakeForm({ onSubmit }) {
-  const [form, setForm] = useState({ firstName: "", lastName: "", phone: "", email: "", balanceOwed: "", careDescription: "", provider: "" });
+function IntakeForm({ onSubmit, prefill, hideContactFields }) {
+  const [form, setForm] = useState({
+    firstName: prefill?.firstName || "",
+    lastName: prefill?.lastName || "",
+    phone: prefill?.phone || "",
+    email: prefill?.email || "",
+    balanceOwed: "",
+    careDescription: "",
+    provider: "",
+  });
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const valid = form.firstName && form.lastName && form.email && form.phone && form.balanceOwed && form.careDescription;
 
@@ -497,16 +505,24 @@ function IntakeForm({ onSubmit }) {
         </div>
       </div>
       <div className="card-body">
-        <div className="section-title">Tell us about yourself</div>
-        <div className="section-sub">Your information is private and HIPAA-protected.</div>
-        <div className="form-row">
-          <div className="form-group"><label>First Name *</label><input placeholder="Maria" value={form.firstName} onChange={e => upd("firstName", e.target.value)} /></div>
-          <div className="form-group"><label>Last Name *</label><input placeholder="Lopez" value={form.lastName} onChange={e => upd("lastName", e.target.value)} /></div>
-        </div>
-        <div className="form-row">
-          <div className="form-group"><label>Phone Number *</label><input placeholder="(555) 000-0000" value={form.phone} onChange={e => upd("phone", formatPhone(e.target.value))} /></div>
-          <div className="form-group"><label>Email Address *</label><input type="email" placeholder="maria@email.com" value={form.email} onChange={e => upd("email", e.target.value)} /></div>
-        </div>
+        {hideContactFields ? (
+          <div className="alert info" style={{ marginBottom: 20 }}>
+            Using the contact info on your account: <strong>{form.firstName} {form.lastName}</strong>, {form.email}{form.phone ? `, ${form.phone}` : ""}.
+          </div>
+        ) : (
+          <>
+            <div className="section-title">Tell us about yourself</div>
+            <div className="section-sub">Your information is private and HIPAA-protected.</div>
+            <div className="form-row">
+              <div className="form-group"><label>First Name *</label><input placeholder="Maria" value={form.firstName} onChange={e => upd("firstName", e.target.value)} /></div>
+              <div className="form-group"><label>Last Name *</label><input placeholder="Lopez" value={form.lastName} onChange={e => upd("lastName", e.target.value)} /></div>
+            </div>
+            <div className="form-row">
+              <div className="form-group"><label>Phone Number *</label><input placeholder="(555) 000-0000" value={form.phone} onChange={e => upd("phone", formatPhone(e.target.value))} /></div>
+              <div className="form-group"><label>Email Address *</label><input type="email" placeholder="maria@email.com" value={form.email} onChange={e => upd("email", e.target.value)} /></div>
+            </div>
+          </>
+        )}
         <div className="form-row">
           <div className="form-group">
             <label>Estimated Balance Owed ($) *</label>
@@ -674,6 +690,7 @@ const handleRegister = async () => {
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: intakeData.email,
       password: regForm.password,
+      options: { data: { role: "patient" } },
     });
 
     if (signUpError) {
@@ -709,12 +726,20 @@ const handlePasswordSignIn = async () => {
       .from("patients")
       .select("*")
       .eq("email", loginForm.email)
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const patientRow = patientData?.[0];
+    if (!patientRow) {
+      await supabase.auth.signOut();
+      setError("We couldn't find a patient account for this email. If you're a provider, please use Provider Sign In instead.");
+      return;
+    }
 
     onAuthenticated({
       email: loginForm.email,
-      firstName: patientData?.first_name || "",
-      lastName: patientData?.last_name || "",
+      firstName: patientRow.first_name || "",
+      lastName: patientRow.last_name || "",
     });
   };
 
@@ -2116,11 +2141,19 @@ function ProviderLogin({ onAuthenticated }) {
       .from("providers")
       .select("*")
       .eq("email", form.email)
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const providerRow = providerData?.[0];
+    if (!providerRow) {
+      await supabase.auth.signOut();
+      setError("We couldn't find a provider account for this email. If you're a patient, please use Patient Sign In instead.");
+      return;
+    }
 
     onAuthenticated({
       email: form.email,
-      practiceName: providerData?.practice_name || "Your Practice",
+      practiceName: providerRow.practice_name || "",
     });
   };
 
@@ -2190,7 +2223,25 @@ function ProviderLogin({ onAuthenticated }) {
                 <span className="magic-link-url">{magicLink}</span>
                 <button className="copy-btn" onClick={handleCopy}>{copied ? "Copied!" : "Copy"}</button>
               </div>
-              <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => onAuthenticated({ email: magicEmail, practiceName: "Sunrise Health Clinic" })}>
+              <button className="btn btn-primary" style={{ width: "100%" }} onClick={async () => {
+                const { data: providerData } = await supabase
+                  .from("providers")
+                  .select("*")
+                  .eq("email", magicEmail)
+                  .order("created_at", { ascending: false })
+                  .limit(1);
+                const providerRow = providerData?.[0];
+                if (!providerRow) {
+                  await supabase.auth.signOut();
+                  setMagicSent(false);
+                  setError("We couldn't find a provider account for this email. If you're a patient, please use Patient Sign In instead.");
+                  return;
+                }
+                onAuthenticated({
+                  email: magicEmail,
+                  practiceName: providerRow.practice_name || "",
+                });
+              }}>
                 Simulate: Click Magic Link
               </button>
             </div>
@@ -2897,6 +2948,7 @@ Welcome aboard.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: form.email,
       password: form.password,
+      options: { data: { role: "provider" } },
     });
 
     if (signUpError) { setError(signUpError.message); setSubmitting(false); return; }
@@ -3035,12 +3087,20 @@ function PatientAccountLogin({ onAuthenticated }) {
       .from("patients")
       .select("*")
       .eq("email", form.email)
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const patientRow = patientData?.[0];
+    if (!patientRow) {
+      await supabase.auth.signOut();
+      setError("We couldn't find a patient account for this email. If you're a provider, please use Provider Sign In instead.");
+      return;
+    }
 
     onAuthenticated({
       email: form.email,
-      firstName: patientData?.first_name || "",
-      lastName: patientData?.last_name || "",
+      firstName: patientRow.first_name || "",
+      lastName: patientRow.last_name || "",
     });
   };
 
@@ -3116,7 +3176,26 @@ function PatientAccountLogin({ onAuthenticated }) {
                 <span className="magic-link-url">{magicLink}</span>
                 <button className="copy-btn" onClick={handleCopy}>{copied ? "Copied!" : "Copy"}</button>
               </div>
-              <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => onAuthenticated({ email: magicEmail, firstName: "Maria", lastName: "Lopez" })}>
+              <button className="btn btn-primary" style={{ width: "100%" }} onClick={async () => {
+                const { data: patientData } = await supabase
+                  .from("patients")
+                  .select("*")
+                  .eq("email", magicEmail)
+                  .order("created_at", { ascending: false })
+                  .limit(1);
+                const patientRow = patientData?.[0];
+                if (!patientRow) {
+                  await supabase.auth.signOut();
+                  setMagicSent(false);
+                  setError("We couldn't find a patient account for this email. If you're a provider, please use Provider Sign In instead.");
+                  return;
+                }
+                onAuthenticated({
+                  email: magicEmail,
+                  firstName: patientRow.first_name || "",
+                  lastName: patientRow.last_name || "",
+                });
+              }}>
                 Simulate: Click Magic Link
               </button>
             </div>
@@ -3689,7 +3768,11 @@ function PatientAccountPortal({ user, onSignOut }) {
             {financingStep === "intake" && (
               <>
                 <button onClick={() => setFinancingStep("choose")} style={{ background: "none", border: "none", color: "var(--teal-dark)", cursor: "pointer", fontFamily: "DM Sans, sans-serif", fontSize: 13, fontWeight: 500, padding: 0, marginBottom: 16 }}>{"← Back"}</button>
-                <IntakeForm onSubmit={(form) => { setFinancingIntakeData({ ...form, firstName: form.firstName || acctForm.firstName, lastName: form.lastName || acctForm.lastName, email: form.email || user.email }); setFinancingStep("portal"); }} />
+                <IntakeForm
+                  prefill={{ firstName: acctForm.firstName, lastName: acctForm.lastName, phone: acctForm.phone, email: user.email }}
+                  hideContactFields
+                  onSubmit={(form) => { setFinancingIntakeData(form); setFinancingStep("portal"); }}
+                />
               </>
             )}
 
@@ -4205,6 +4288,59 @@ function MainApp() {
   // patient account portal state
   const [patientAcctUser, setPatientAcctUser] = useState(null);
   const [acctResetKey, setAcctResetKey] = useState(0);
+  // session restoration (so a reload / back-forward navigation doesn't falsely look signed out)
+  const [sessionChecked, setSessionChecked] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const email = session?.user?.email;
+      const role = session?.user?.user_metadata?.role;
+
+      const lookupPatient = async () => {
+        const { data } = await supabase.from("patients").select("*").eq("email", email).order("created_at", { ascending: false }).limit(1);
+        return data?.[0] || null;
+      };
+      const lookupProvider = async () => {
+        const { data } = await supabase.from("providers").select("*").eq("email", email).order("created_at", { ascending: false }).limit(1);
+        return data?.[0] || null;
+      };
+
+      if (email) {
+        if (role === "provider") {
+          const providerRow = await lookupProvider();
+          if (providerRow) {
+            setProviderUser({ email, practiceName: providerRow.practice_name || "", contactName: providerRow.contact_name || "" });
+            setMode("provider");
+            setProviderPage("dashboard");
+          }
+        } else if (role === "patient") {
+          const patientRow = await lookupPatient();
+          if (patientRow) {
+            setPatientAcctUser({ email, firstName: patientRow.first_name || "", lastName: patientRow.last_name || "" });
+            setMode("patient");
+            setPage("patient-account");
+          }
+        } else {
+          // No role tag on this account (created before this fix) — fall back to checking both tables.
+          const patientRow = await lookupPatient();
+          if (patientRow) {
+            setPatientAcctUser({ email, firstName: patientRow.first_name || "", lastName: patientRow.last_name || "" });
+            setMode("patient");
+            setPage("patient-account");
+          } else {
+            const providerRow = await lookupProvider();
+            if (providerRow) {
+              setProviderUser({ email, practiceName: providerRow.practice_name || "", contactName: providerRow.contact_name || "" });
+              setMode("provider");
+              setProviderPage("dashboard");
+            }
+          }
+        }
+      }
+      setSessionChecked(true);
+    })();
+  }, []);
 
   const handleApplicationCreated = (appId, patId) => { setApplicationId(appId); setPatientDbId(patId); };
   const handleIntakeSubmit = (form) => {
@@ -4245,6 +4381,17 @@ function MainApp() {
   const patientPortalPages = ["portal", "app-submitted", "eob-review", "offer-review", "esign", "offer-accepted", "patient-account"];
   const isPatientPortal = patientPortalPages.includes(page);
   const isProviderPortal = mode === "provider" && providerUser;
+
+  if (!sessionChecked) {
+    return (
+      <>
+        <style>{styles}</style>
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "DM Sans, sans-serif", color: "var(--text-secondary)" }}>
+          Loading...
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
