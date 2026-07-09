@@ -690,6 +690,7 @@ const handleRegister = async () => {
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: intakeData.email,
       password: regForm.password,
+      options: { data: { role: "patient" } },
     });
 
     if (signUpError) {
@@ -725,12 +726,20 @@ const handlePasswordSignIn = async () => {
       .from("patients")
       .select("*")
       .eq("email", loginForm.email)
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const patientRow = patientData?.[0];
+    if (!patientRow) {
+      await supabase.auth.signOut();
+      setError("We couldn't find a patient account for this email. If you're a provider, please use Provider Sign In instead.");
+      return;
+    }
 
     onAuthenticated({
       email: loginForm.email,
-      firstName: patientData?.first_name || "",
-      lastName: patientData?.last_name || "",
+      firstName: patientRow.first_name || "",
+      lastName: patientRow.last_name || "",
     });
   };
 
@@ -2132,11 +2141,19 @@ function ProviderLogin({ onAuthenticated }) {
       .from("providers")
       .select("*")
       .eq("email", form.email)
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const providerRow = providerData?.[0];
+    if (!providerRow) {
+      await supabase.auth.signOut();
+      setError("We couldn't find a provider account for this email. If you're a patient, please use Patient Sign In instead.");
+      return;
+    }
 
     onAuthenticated({
       email: form.email,
-      practiceName: providerData?.practice_name || "Your Practice",
+      practiceName: providerRow.practice_name || "",
     });
   };
 
@@ -2211,10 +2228,18 @@ function ProviderLogin({ onAuthenticated }) {
                   .from("providers")
                   .select("*")
                   .eq("email", magicEmail)
-                  .single();
+                  .order("created_at", { ascending: false })
+                  .limit(1);
+                const providerRow = providerData?.[0];
+                if (!providerRow) {
+                  await supabase.auth.signOut();
+                  setMagicSent(false);
+                  setError("We couldn't find a provider account for this email. If you're a patient, please use Patient Sign In instead.");
+                  return;
+                }
                 onAuthenticated({
                   email: magicEmail,
-                  practiceName: providerData?.practice_name || "",
+                  practiceName: providerRow.practice_name || "",
                 });
               }}>
                 Simulate: Click Magic Link
@@ -2923,6 +2948,7 @@ Welcome aboard.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: form.email,
       password: form.password,
+      options: { data: { role: "provider" } },
     });
 
     if (signUpError) { setError(signUpError.message); setSubmitting(false); return; }
@@ -3061,12 +3087,20 @@ function PatientAccountLogin({ onAuthenticated }) {
       .from("patients")
       .select("*")
       .eq("email", form.email)
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const patientRow = patientData?.[0];
+    if (!patientRow) {
+      await supabase.auth.signOut();
+      setError("We couldn't find a patient account for this email. If you're a provider, please use Provider Sign In instead.");
+      return;
+    }
 
     onAuthenticated({
       email: form.email,
-      firstName: patientData?.first_name || "",
-      lastName: patientData?.last_name || "",
+      firstName: patientRow.first_name || "",
+      lastName: patientRow.last_name || "",
     });
   };
 
@@ -3147,11 +3181,19 @@ function PatientAccountLogin({ onAuthenticated }) {
                   .from("patients")
                   .select("*")
                   .eq("email", magicEmail)
-                  .single();
+                  .order("created_at", { ascending: false })
+                  .limit(1);
+                const patientRow = patientData?.[0];
+                if (!patientRow) {
+                  await supabase.auth.signOut();
+                  setMagicSent(false);
+                  setError("We couldn't find a patient account for this email. If you're a provider, please use Provider Sign In instead.");
+                  return;
+                }
                 onAuthenticated({
                   email: magicEmail,
-                  firstName: patientData?.first_name || "",
-                  lastName: patientData?.last_name || "",
+                  firstName: patientRow.first_name || "",
+                  lastName: patientRow.last_name || "",
                 });
               }}>
                 Simulate: Click Magic Link
@@ -4253,18 +4295,46 @@ function MainApp() {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       const email = session?.user?.email;
+      const role = session?.user?.user_metadata?.role;
+
+      const lookupPatient = async () => {
+        const { data } = await supabase.from("patients").select("*").eq("email", email).order("created_at", { ascending: false }).limit(1);
+        return data?.[0] || null;
+      };
+      const lookupProvider = async () => {
+        const { data } = await supabase.from("providers").select("*").eq("email", email).order("created_at", { ascending: false }).limit(1);
+        return data?.[0] || null;
+      };
+
       if (email) {
-        const { data: patientRow } = await supabase.from("patients").select("*").eq("email", email).maybeSingle();
-        if (patientRow) {
-          setPatientAcctUser({ email, firstName: patientRow.first_name || "", lastName: patientRow.last_name || "" });
-          setMode("patient");
-          setPage("patient-account");
-        } else {
-          const { data: providerRow } = await supabase.from("providers").select("*").eq("email", email).maybeSingle();
+        if (role === "provider") {
+          const providerRow = await lookupProvider();
           if (providerRow) {
             setProviderUser({ email, practiceName: providerRow.practice_name || "", contactName: providerRow.contact_name || "" });
             setMode("provider");
             setProviderPage("dashboard");
+          }
+        } else if (role === "patient") {
+          const patientRow = await lookupPatient();
+          if (patientRow) {
+            setPatientAcctUser({ email, firstName: patientRow.first_name || "", lastName: patientRow.last_name || "" });
+            setMode("patient");
+            setPage("patient-account");
+          }
+        } else {
+          // No role tag on this account (created before this fix) — fall back to checking both tables.
+          const patientRow = await lookupPatient();
+          if (patientRow) {
+            setPatientAcctUser({ email, firstName: patientRow.first_name || "", lastName: patientRow.last_name || "" });
+            setMode("patient");
+            setPage("patient-account");
+          } else {
+            const providerRow = await lookupProvider();
+            if (providerRow) {
+              setProviderUser({ email, practiceName: providerRow.practice_name || "", contactName: providerRow.contact_name || "" });
+              setMode("provider");
+              setProviderPage("dashboard");
+            }
           }
         }
       }
