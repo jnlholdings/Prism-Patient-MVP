@@ -589,34 +589,31 @@ function ComingSoonBanner({ onJoinClick }) {
   );
 }
 
+// Mailchimp embedded-form target. Posting a real <form> to this URL with
+// target set to a hidden iframe submits the subscriber directly to
+// Mailchimp — no API key, no CORS, no backend involved. Values copied from
+// the embed code in Mailchimp: Audience > Forms > Other forms > Embedded form.
+const MAILCHIMP_ACTION_URL = "https://gmail.us5.list-manage.com/subscribe/post?u=0fe959857832831538427af7e&id=f2c9ab9c3a&f_id=00e4bdedf0";
+// Mailchimp's anti-bot honeypot field. Must stay present, hidden, and empty.
+const MAILCHIMP_HONEYPOT_NAME = "b_0fe959857832831538427af7e_f2c9ab9c3a";
+
 function ComingSoonModal({ onClose }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | submitting | done | error
-  const [error, setError] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | submitting | done
 
   const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const [error, setError] = useState("");
 
-  const handleSubmit = async () => {
-    if (!name.trim()) { setError("Please enter your name."); return; }
-    if (!isValidEmail) { setError("Please enter a valid email address."); return; }
+  const handleSubmit = (e) => {
+    if (!name.trim()) { e.preventDefault(); setError("Please enter your name."); return; }
+    if (!isValidEmail) { e.preventDefault(); setError("Please enter a valid email address."); return; }
     setError("");
     setStatus("submitting");
-
-    const { error: insertError } = await supabase
-      .from("mailing_list")
-      .upsert(
-        { email: email.trim().toLowerCase(), name: name.trim(), source: "coming_soon_modal" },
-        { onConflict: "email", ignoreDuplicates: true }
-      );
-
-    if (insertError) {
-      setError("Something went wrong — please try again in a moment.");
-      setStatus("error");
-      return;
-    }
-
-    setStatus("done");
+    // No preventDefault here — the browser submits the real <form> below to
+    // Mailchimp, loading the response into the hidden iframe instead of
+    // navigating the page. We optimistically show success shortly after.
+    setTimeout(() => setStatus("done"), 900);
   };
 
   return (
@@ -658,34 +655,44 @@ function ComingSoonModal({ onClose }) {
         <div className="card-body">
           {status === "done" ? (
             <div className="alert success" style={{ textAlign: "center" }}>
-              You're on the list! We'll email you as soon as we launch.
+              You're on the list! Check your inbox to confirm if prompted — we'll email you as soon as we launch.
             </div>
           ) : (
-            <>
+            <form
+              action={MAILCHIMP_ACTION_URL}
+              method="post"
+              target="mc_hidden_iframe"
+              onSubmit={handleSubmit}
+            >
               <div className="form-group">
                 <label>Name *</label>
-                <input placeholder="Jane Smith" value={name} onChange={(e) => setName(e.target.value)} />
+                <input name="FNAME" placeholder="Jane Smith" value={name} onChange={(e) => setName(e.target.value)} />
               </div>
               <div className="form-group">
                 <label>Email Address *</label>
-                <input type="email" placeholder="jane@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <input type="email" name="EMAIL" placeholder="jane@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+              {/* Mailchimp anti-bot honeypot — must stay hidden and empty */}
+              <div aria-hidden="true" style={{ position: "absolute", left: -5000 }}>
+                <input type="text" name={MAILCHIMP_HONEYPOT_NAME} tabIndex={-1} defaultValue="" />
               </div>
               {error && <div style={{ color: "#DC2626", fontSize: 13, marginBottom: 12 }}>{error}</div>}
               <button
+                type="submit"
                 className="btn btn-primary"
                 style={{ width: "100%" }}
                 disabled={!email || !name.trim() || status === "submitting"}
-                onClick={handleSubmit}
               >
                 {status === "submitting" ? "Joining..." : "Notify Me at Launch"}
               </button>
               <div style={{ fontSize: 11.5, color: "var(--text-light)", textAlign: "center", marginTop: 12, lineHeight: 1.6 }}>
                 We'll only use this to send you launch updates. No spam, unsubscribe anytime.
               </div>
-            </>
+            </form>
           )}
         </div>
       </div>
+      <iframe name="mc_hidden_iframe" title="mailchimp-submit" style={{ display: "none" }} />
     </div>
   );
 }
