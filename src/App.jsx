@@ -5340,29 +5340,40 @@ function AdminDashboard({ session, onSignOut }) {
 
   const [dbReady, setDbReady] = useState(true);
 
+  const [missingTables, setMissingTables] = useState([]);
+
   const fetchAll = useCallback(async () => {
     setLoading(true);
-    try {
-      const [patRes, provRes, appRes, refRes, planRes] = await Promise.all([
-        supabase.from("patients").select("id, email, first_name, last_name, phone, created_at").order("created_at", { ascending: false }).limit(200),
-        supabase.from("providers").select("id, email, practice_name, contact_name, phone, specialty, created_at").order("created_at", { ascending: false }).limit(200),
-        supabase.from("applications").select("id, patient_id, balance_owed, approved_amount, decision, term, apr, monthly_payment, status, created_at").order("created_at", { ascending: false }).limit(200),
-        supabase.from("referrals").select("id, provider_id, patient_first_name, patient_last_name, patient_email, balance_owed, care_description, method, status, referral_code, created_at").order("created_at", { ascending: false }).limit(200),
-        supabase.from("payment_plans").select("id, patient_id, autopay_status, autopay_amount, autopay_charge_day, next_due_date, created_at").eq("autopay_status", "pending_review").order("created_at", { ascending: false }),
-      ]);
-      const anyError = [patRes, provRes, appRes, refRes, planRes].find(r => r.error);
-      if (anyError) {
-        console.warn("Admin fetch error:", anyError.error);
-        setDbReady(false);
-      } else {
-        setDbReady(true);
-        setPatients(patRes.data || []);
-        setProviders(provRes.data || []);
-        setApplications(appRes.data || []);
-        setReferrals(refRes.data || []);
-        setRequests(planRes.data || []);
-      }
-    } catch (e) { console.error(e); setDbReady(false); }
+    // Each table is queried independently — one missing table shows a warning
+    // but never blanks the dashboard. Tables that exist render normally.
+    const safe = async (promise, label) => {
+      try {
+        const res = await promise;
+        if (res.error) { console.warn(`Admin [${label}]:`, res.error.message); return { data: null, missing: true }; }
+        return { data: res.data || [], missing: false };
+      } catch (e) { console.error(`Admin [${label}]:`, e); return { data: null, missing: true }; }
+    };
+    const [patRes, provRes, appRes, refRes, planRes] = await Promise.all([
+      safe(supabase.from("patients").select("id, email, first_name, last_name, phone, created_at").order("created_at", { ascending: false }).limit(200), "patients"),
+      safe(supabase.from("providers").select("id, email, practice_name, contact_name, phone, specialty, created_at").order("created_at", { ascending: false }).limit(200), "providers"),
+      safe(supabase.from("applications").select("id, patient_id, balance_owed, approved_amount, decision, term, apr, monthly_payment, status, created_at").order("created_at", { ascending: false }).limit(200), "applications"),
+      safe(supabase.from("referrals").select("id, provider_id, patient_first_name, patient_last_name, patient_email, balance_owed, care_description, method, status, referral_code, created_at").order("created_at", { ascending: false }).limit(200), "referrals"),
+      safe(supabase.from("payment_plans").select("id, patient_id, autopay_status, autopay_amount, autopay_charge_day, next_due_date, created_at").eq("autopay_status", "pending_review").order("created_at", { ascending: false }), "payment_plans"),
+    ]);
+    const missing = [
+      patRes.missing && "patients",
+      provRes.missing && "providers",
+      appRes.missing && "applications",
+      refRes.missing && "referrals",
+      planRes.missing && "payment_plans",
+    ].filter(Boolean);
+    setMissingTables(missing);
+    setDbReady(true);
+    if (patRes.data)  setPatients(patRes.data);
+    if (provRes.data) setProviders(provRes.data);
+    if (appRes.data)  setApplications(appRes.data);
+    if (refRes.data)  setReferrals(refRes.data);
+    if (planRes.data) setRequests(planRes.data);
     setLoading(false);
   }, []);
 
@@ -5484,23 +5495,20 @@ function AdminDashboard({ session, onSignOut }) {
             <div style={{ textAlign: "center", padding: "48px 0", color: "#94A3B8", fontSize: 13 }}>Loading data…</div>
           )}
 
-          {!loading && !dbReady && (
+          {!loading && missingTables.length > 0 && (
             <div style={{
-              background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12,
-              padding: "20px 24px", marginBottom: 20,
-              display: "flex", alignItems: "flex-start", gap: 14,
+              background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10,
+              padding: "13px 18px", marginBottom: 16,
+              display: "flex", alignItems: "center", gap: 12,
             }}>
-              <div style={{ fontSize: 22, flexShrink: 0 }}>⚠️</div>
-              <div>
-                <div style={{ fontFamily: "'Sora',sans-serif", fontWeight: 700, fontSize: 14, color: "#92400E", marginBottom: 4 }}>
-                  Unable to load data
-                </div>
-                <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
-                  One or more Supabase tables returned an error. Check the browser console for details.
-                  If tables are missing, run the SQL migrations first, then refresh.
-                </div>
-                <button className="ad-btn ad-btn-ghost" style={{ marginTop: 10, fontSize: 12 }} onClick={fetchAll}>↺ Retry</button>
+              <div style={{ fontSize: 17, flexShrink: 0 }}>⚠️</div>
+              <div style={{ flex: 1, fontSize: 12.5, color: "#78350F" }}>
+                <strong style={{ color: "#92400E" }}>
+                  {missingTables.length} table{missingTables.length !== 1 ? "s" : ""} not found:
+                </strong>{" "}
+                {missingTables.join(", ")} — run SQL migrations for missing tables, then retry.
               </div>
+              <button className="ad-btn ad-btn-ghost" style={{ fontSize: 11, flexShrink: 0 }} onClick={fetchAll}>↺ Retry</button>
             </div>
           )}
 
@@ -5579,6 +5587,41 @@ function AdminDashboard({ session, onSignOut }) {
             </>}
 
             {/* ── AUTOPAY REQUESTS ── */}
+            {/* ── APPLICATIONS ── */}
+            {view === "applications" && <>
+              <div className="ad-metrics" style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr" }}>
+                <div className="ad-metric tc"><div className="ad-m-lbl">Total</div><div className="ad-m-val tc">{applications.length}</div></div>
+                <div className="ad-metric gc"><div className="ad-m-lbl">Approved</div><div className="ad-m-val gc">{applications.filter(a=>a.decision==="approved").length}</div></div>
+                <div className="ad-metric ac"><div className="ad-m-lbl">Reviewing</div><div className="ad-m-val ac">{applications.filter(a=>a.decision==="reviewing"||a.decision==="pending").length}</div></div>
+                <div className="ad-metric bc"><div className="ad-m-lbl">Declined</div><div className="ad-m-val bc">{applications.filter(a=>a.decision==="declined").length}</div></div>
+              </div>
+              <div className="ad-panel">
+                <div className="ad-ph"><div><div className="ad-ph-title">All Applications</div><div className="ad-ph-sub">EOB-verified · auto-assigned terms</div></div></div>
+                {applications.length === 0
+                  ? <div className="ad-empty"><div className="ad-empty-ic">📋</div>No applications yet.</div>
+                  : <table className="ad-tbl">
+                      <thead><tr><th>Patient</th><th>Balance Owed</th><th>Approved Amt</th><th>Term</th><th>Monthly</th><th>Decision</th><th>Submitted</th></tr></thead>
+                      <tbody>
+                        {applications.map(a => {
+                          const pat = patients.find(p => p.id === a.patient_id);
+                          return (
+                            <tr key={a.id}>
+                              <td><div className="ad-tbl-name">{pat ? `${pat.first_name} ${pat.last_name}` : "—"}</div><div className="ad-tbl-sub">{pat?.email}</div></td>
+                              <td style={{ fontWeight: 600, color: "#001936" }}>{a.balance_owed ? `$${Number(a.balance_owed).toLocaleString()}` : "—"}</td>
+                              <td style={{ color: "#0FB8AB", fontWeight: 600 }}>{a.approved_amount ? `$${Number(a.approved_amount).toLocaleString()}` : "—"}</td>
+                              <td>{a.term ? <span className="ad-pill ad-pill-b">{a.term} mo</span> : "—"}</td>
+                              <td style={{ color: "#64748B" }}>{a.monthly_payment ? `$${Number(a.monthly_payment).toFixed(2)}/mo` : "—"}</td>
+                              <td><span className={`ad-pill ${a.decision==="approved"?"ad-pill-g":a.decision==="declined"?"ad-pill-r":"ad-pill-a"}`}>{a.decision || "—"}</span></td>
+                              <td style={{ fontSize: 11, color: "#94A3B8" }}>{fmtAdminTime(a.created_at)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                }
+              </div>
+            </>}
+
             {view === "autopay" && <>
               <div className="ad-panel">
                 <div className="ad-ph">
