@@ -13,6 +13,134 @@ const COMING_SOON_MODE = true;
 // tiled across every page as a reminder that copy hasn't been signed off.
 const CONTENT_PENDING_REVIEW = false;
 
+// ─── URL-BASED ROUTING ─────────────────────────────────────────────────────
+// Gives every page its own crawlable, shareable, bookmarkable URL (so search
+// engines can index individual pages, e.g. prism-patient.com/services) and
+// makes the browser Back/Forward buttons step through in-app navigation
+// instead of exiting the site. Implemented with the native History API
+// (pushState/popstate) rather than a routing library: page selection already
+// lives in React state throughout this file, so this layer keeps that state
+// as the source of truth and mirrors it to the URL, instead of restructuring
+// every page into route components.
+
+const PATIENT_PUBLIC_PATH_TO_PAGE = {
+  "/": "home",
+  "/how-it-works": "how-it-works",
+  "/about": "about",
+  "/services": "services",
+  "/bill-review-service": "bill-review-service",
+  "/blog": "blog-patient",
+  "/contact": "contact-patient",
+  "/patient-login": "patient-account-login",
+};
+const PATIENT_PAGE_TO_PATH = {
+  "home": "/",
+  "how-it-works": "/how-it-works",
+  "about": "/about",
+  "services": "/services",
+  "bill-review-service": "/bill-review-service",
+  "blog-patient": "/blog",
+  "contact-patient": "/contact",
+  "patient-account-login": "/patient-login",
+  "magic-link-sent": "/magic-link-sent",
+  "auth": "/auth",
+  "portal": "/portal",
+  "app-submitted": "/apply/submitted",
+  "eob-review": "/apply/review",
+  "offer-review": "/apply/offer",
+  "esign": "/apply/sign",
+  "offer-accepted": "/apply/accepted",
+  "patient-account": "/account",
+};
+
+const PROVIDER_PUBLIC_PATH_TO_PAGE = {
+  "/provider": "home",
+  "/provider/about": "about",
+  "/provider/services": "services",
+  "/provider/partners": "partners",
+  "/provider/faq": "faq",
+  "/provider/register": "register",
+  "/provider/login": "provider-login",
+  "/provider/how-it-works": "how-it-works",
+  "/provider/blog": "blog-provider",
+  "/provider/contact": "contact-provider",
+};
+const PROVIDER_PAGE_TO_PATH = {
+  "home": "/provider",
+  "about": "/provider/about",
+  "services": "/provider/services",
+  "partners": "/provider/partners",
+  "faq": "/provider/faq",
+  "register": "/provider/register",
+  "provider-login": "/provider/login",
+  "how-it-works": "/provider/how-it-works",
+  "blog-provider": "/provider/blog",
+  "contact-provider": "/provider/contact",
+};
+const PROVIDER_PORTAL_PATH_TO_PAGE = {
+  "/provider/dashboard": "dashboard",
+  "/provider/refer": "refer",
+  "/provider/account": "account",
+  "/provider/billing": "billing",
+  "/provider/messages": "messages",
+};
+const PROVIDER_PORTAL_PAGE_TO_PATH = {
+  "dashboard": "/provider/dashboard",
+  "refer": "/provider/refer",
+  "account": "/provider/account",
+  "billing": "/provider/billing",
+  "messages": "/provider/messages",
+};
+
+const ACCOUNT_SUBPAGES = ["balances", "payments", "account", "financing", "documents", "billreview", "messages"];
+const ADMIN_VIEWS = ["overview", "autopay", "patients", "providers", "referrals", "users"];
+
+// Resolves the current mode/page from the URL on first load, so a direct
+// link (e.g. prism-patient.com/services) opens straight to that page. Pages
+// that require an active session (portal, account, provider portal) are
+// intentionally not resolved here — session restoration decides those once
+// the user's auth state is known, then the sync effect below updates the URL
+// to match.
+function getInitialRouteState() {
+  if (typeof window === "undefined") return { mode: "patient", page: "home" };
+  const path = window.location.pathname;
+  if (path === "/provider" || path.startsWith("/provider/")) {
+    return { mode: "provider", page: PROVIDER_PUBLIC_PATH_TO_PAGE[path] || "home" };
+  }
+  return { mode: "patient", page: PATIENT_PUBLIC_PATH_TO_PAGE[path] || "home" };
+}
+
+// Mirrors the current mode/page/providerPage state to the URL.
+function pathForAppState(mode, page, providerPage, hasProviderUser) {
+  if (mode === "provider") {
+    if (hasProviderUser) return PROVIDER_PORTAL_PAGE_TO_PATH[providerPage] || "/provider/dashboard";
+    return PROVIDER_PAGE_TO_PATH[page] || "/provider";
+  }
+  return PATIENT_PAGE_TO_PATH[page] || "/";
+}
+
+function getInitialAcctPage() {
+  if (typeof window === "undefined") return "balances";
+  const path = window.location.pathname;
+  const prefix = "/account/";
+  if (path.startsWith(prefix)) {
+    const sub = path.slice(prefix.length);
+    if (ACCOUNT_SUBPAGES.includes(sub)) return sub;
+  }
+  return "balances";
+}
+
+function getInitialAdminView() {
+  if (typeof window === "undefined") return "overview";
+  const path = window.location.pathname;
+  const prefix = "/admin/";
+  if (path.startsWith(prefix)) {
+    const sub = path.slice(prefix.length);
+    if (ADMIN_VIEWS.includes(sub)) return sub;
+  }
+  return "overview";
+}
+
 const ComingSoonContext = createContext({ active: false, requestAccess: () => {} });
 function useComingSoon() {
   return useContext(ComingSoonContext);
@@ -3924,7 +4052,7 @@ const MOCK_PAYMENT_HISTORY = [
 ];
 
 function PatientAccountPortal({ user, onSignOut }) {
-  const [acctPage, setAcctPage] = useState("balances");
+  const [acctPage, setAcctPage] = useState(() => getInitialAcctPage());
   const [paymentPlan, setPaymentPlan] = useState(null);
   const [payAmount, setPayAmount] = useState("");
   const [paySubmitting, setPaySubmitting] = useState(false);
@@ -3933,6 +4061,28 @@ function PatientAccountPortal({ user, onSignOut }) {
   const [banking, setBanking] = useState({ bankName: "Chase", accountHolder: "Maria Lopez", routingNumber: "021000021", accountNumber: "4521987654", accountType: "checking" });
   const [bankSaved, setBankSaved] = useState(true);
   const [acctSaved, setAcctSaved] = useState(false);
+
+  // Mirror the active account tab to the URL (/account/<tab>) and support
+  // Back/Forward between tabs.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const path = acctPage === "balances" ? "/account" : `/account/${acctPage}`;
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+  }, [acctPage]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onPopState = () => {
+      const path = window.location.pathname;
+      if (!path.startsWith("/account")) return;
+      const sub = path === "/account" ? "balances" : path.slice("/account/".length);
+      if (ACCOUNT_SUBPAGES.includes(sub)) setAcctPage(sub);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   // Real payment plan data (falls back to MOCK_PLANS for demo accounts with nothing signed yet)
   const [realPlans, setRealPlans] = useState([]);
@@ -5330,7 +5480,7 @@ function fmtAdminTime(ts) {
 }
 
 function AdminDashboard({ session, onSignOut }) {
-  const [view, setView] = useState("overview");
+  const [view, setView] = useState(() => getInitialAdminView());
   const [requests, setRequests] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [patients, setPatients] = useState([]);
@@ -5349,6 +5499,28 @@ function AdminDashboard({ session, onSignOut }) {
   const [umMsg, setUmMsg] = useState(null); // { type: "success"|"error", text }
   const [addingUser, setAddingUser] = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
+
+  // Mirror the active admin section to the URL (/admin/<section>) and
+  // support Back/Forward between sections.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const path = view === "overview" ? "/admin" : `/admin/${view}`;
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+  }, [view]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onPopState = () => {
+      const path = window.location.pathname;
+      if (!path.startsWith("/admin")) return;
+      const sub = path === "/admin" ? "overview" : path.slice("/admin/".length);
+      if (ADMIN_VIEWS.includes(sub)) setView(sub);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const toast = useCallback((msg) => {
     const id = Date.now();
@@ -5852,13 +6024,18 @@ function AdminApp() {
 }
 
 export default function Root() {
-  const isAdminRoute = typeof window !== "undefined" && window.location.search.includes("admin");
+  const isAdminRoute = typeof window !== "undefined" && (
+    window.location.pathname === "/admin" ||
+    window.location.pathname.startsWith("/admin/") ||
+    window.location.search.includes("admin") // back-compat with the old ?admin link
+  );
   return isAdminRoute ? <AdminApp /> : <MainApp />;
 }
 
 function MainApp() {
-  const [mode, setMode] = useState("patient");
-  const [page, setPage] = useState("home");
+  const initialRoute = getInitialRouteState();
+  const [mode, setMode] = useState(initialRoute.mode);
+  const [page, setPage] = useState(initialRoute.page);
   // patient flow state
   const [intakeData, setIntakeData] = useState(null);
   const [magicLink, setMagicLink] = useState("");
@@ -5956,6 +6133,43 @@ function MainApp() {
       setSessionChecked(true);
     })();
   }, []);
+
+  // Mirror mode/page/providerPage to the URL so every page has its own
+  // crawlable, shareable link, and push a history entry per navigation so
+  // Back/Forward steps through the app instead of leaving the site.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const path = pathForAppState(mode, page, providerPage, !!providerUser);
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+  }, [mode, page, providerPage, providerUser]);
+
+  // Re-derive state from the URL on Back/Forward navigation.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onPopState = () => {
+      const path = window.location.pathname;
+      if (path === "/provider" || path.startsWith("/provider/")) {
+        if (providerUser) {
+          const portalPage = PROVIDER_PORTAL_PATH_TO_PAGE[path];
+          if (portalPage) { setMode("provider"); setProviderPage(portalPage); return; }
+        }
+        setMode("provider");
+        setPage(PROVIDER_PUBLIC_PATH_TO_PAGE[path] || "home");
+        return;
+      }
+      if (patientAcctUser && (path === "/account" || path.startsWith("/account/"))) {
+        setMode("patient");
+        setPage("patient-account");
+        return;
+      }
+      setMode("patient");
+      setPage(PATIENT_PUBLIC_PATH_TO_PAGE[path] || "home");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [providerUser, patientAcctUser]);
 
   const handleApplicationCreated = (appId, patId) => { setApplicationId(appId); setPatientDbId(patId); };
   const handleIntakeSubmit = (form) => {
