@@ -6014,15 +6014,17 @@ function MainApp() {
   // coming soon gate
   const [comingSoonOpen, setComingSoonOpen] = useState(false);
 
+  // Waitlist pop-up opens on the first page load and again every time the
+  // visitor moves to a new page (v42; previously once per browser session).
+  // It keeps appearing even after the visitor has joined the waitlist.
+  const currentPagePath = pathForAppState(mode, page, providerPage, !!providerUser);
+  const lastPopupPathRef = useRef(null);
   useEffect(() => {
     if (!COMING_SOON_MODE) return;
-    try {
-      if (!sessionStorage.getItem("prism_coming_soon_seen")) {
-        setComingSoonOpen(true);
-        sessionStorage.setItem("prism_coming_soon_seen", "1");
-      }
-    } catch (e) { /* sessionStorage unavailable — skip auto-open */ }
-  }, []);
+    if (lastPopupPathRef.current === currentPagePath) return;
+    lastPopupPathRef.current = currentPagePath;
+    setComingSoonOpen(true);
+  }, [currentPagePath]);
 
   useEffect(() => {
     (async () => {
