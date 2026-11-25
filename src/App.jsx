@@ -1048,6 +1048,7 @@ function AuthPage({ intakeData, onAuthenticated }) {
   const [magicEmail, setMagicEmail] = useState("");
   const [magicSent, setMagicSent] = useState(false);
   const [error, setError] = useState("");
+  const [confirmPending, setConfirmPending] = useState(false);
   const updReg = (k, v) => setRegForm(f => ({ ...f, [k]: v }));
   const updLogin = (k, v) => setLoginForm(f => ({ ...f, [k]: v }));
 
@@ -1058,10 +1059,20 @@ const handleRegister = async () => {
     if (regForm.password !== regForm.confirmPassword) { setError("Passwords do not match."); return; }
     setError("");
 
+    // Profile fields travel with the sign-up; the database trigger
+    // (private.handle_new_user) creates the patients row linked to the
+    // new account's auth user ID. No client-side insert under RLS.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: intakeData.email,
       password: regForm.password,
-      options: { data: { role: "patient" } },
+      options: {
+        data: {
+          role: "patient",
+          first_name: intakeData.firstName || "",
+          last_name: intakeData.lastName || "",
+          phone: intakeData.phone || "",
+        },
+      },
     });
 
     if (signUpError) {
@@ -1069,12 +1080,12 @@ const handleRegister = async () => {
       return;
     }
 
-    await supabase.from("patients").insert({
-      email: intakeData.email,
-      first_name: intakeData.firstName,
-      last_name: intakeData.lastName,
-      phone: intakeData.phone,
-    });
+    // "Confirm email" on: no session until the user clicks the emailed link.
+    if (!data?.session) {
+      setConfirmPending(true);
+      setLoginForm(f => ({ ...f, email: intakeData.email }));
+      return;
+    }
 
     onAuthenticated({ email: intakeData.email, firstName: intakeData.firstName, lastName: intakeData.lastName });
   };
@@ -1147,6 +1158,15 @@ const handlePasswordSignIn = async () => {
       <div className="card-body">
         {tab === "register" && (
           <>
+            {confirmPending ? (
+              <>
+                <div className="alert success" style={{ marginBottom: 16 }}>
+                  {"Account created. We sent a confirmation link to "}<strong>{intakeData?.email}</strong>{". Click the link in that email, then return here and sign in to continue your application."}
+                </div>
+                <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => { setTab("login"); setError(""); }}>Go to Sign In</button>
+              </>
+            ) : (
+            <>
             <div className="alert info" style={{ marginBottom: 16 }}>{"Creating account for: "}<strong>{intakeData?.email}</strong></div>
             <div className="form-group">
               <label>Create Password *</label>
@@ -1159,6 +1179,8 @@ const handlePasswordSignIn = async () => {
             </div>
             {error && <div style={{ color: "#DC2626", fontSize: 13, marginBottom: 12 }}>{error}</div>}
             <button className="btn btn-primary" style={{ width: "100%" }} onClick={handleRegister}>Create Account & Continue</button>
+            </>
+            )}
           </>
         )}
 
@@ -1263,7 +1285,9 @@ function PatientPortal({ user, intakeData, onApprovalResult, onEobReview, onSign
     }).select().single();
 
     if (intakeData.referralCode) {
-      await supabase.from("referrals").update({ status: "applied" }).eq("referral_code", intakeData.referralCode);
+      // Provider-owned row: patients can't update it under RLS, so the
+      // database function marks the referral applied on their behalf.
+      await supabase.rpc("mark_referral_applied", { p_code: intakeData.referralCode });
     }
 
     if (uwForm.eobFile) {
@@ -1276,8 +1300,9 @@ function PatientPortal({ user, intakeData, onApprovalResult, onEobReview, onSign
           .upload(filePath, uwForm.eobFileObj);
 
         if (!uploadError) {
-          const { data: publicUrlData } = supabase.storage.from("eob-documents").getPublicUrl(filePath);
-          fileUrl = publicUrlData?.publicUrl || null;
+          // eob-documents is a private bucket: store the storage path, not a
+          // public URL. Viewers get a time-limited link via createSignedUrl.
+          fileUrl = filePath;
         } else {
           setEobUploadError("File upload failed — the application was still submitted, but the document wasn't attached.");
         }
@@ -2249,15 +2274,10 @@ function ContactPage({ audience }) {
   const handleSend = async () => {
     setSending(true);
 
-    let patientId = null;
-    let providerId = null;
-    if (audience === "provider") {
-      const { data } = await supabase.from("providers").select("id").eq("email", form.email).maybeSingle();
-      providerId = data?.id || null;
-    } else {
-      const { data } = await supabase.from("patients").select("id").eq("email", form.email).maybeSingle();
-      patientId = data?.id || null;
-    }
+    // Public contact messages are saved unlinked to any account (RLS allows
+    // anonymous inserts only with null patient/provider IDs).
+    const patientId = null;
+    const providerId = null;
 
     const bodyWithContact = `${form.message}\n\n---\nFrom: ${form.name} (${form.email}${form.phone ? ", " + form.phone : ""})`;
 
@@ -3737,6 +3757,7 @@ function ProviderRegister({ onRegistered }) {
   const [form, setForm] = useState({ contactName: "", practiceName: "", email: "", phone: "", specialty: "", password: "", confirmPassword: "" });
   const [submitting, setSubmitting] = useState(false);
   const [showEmail, setShowEmail] = useState(false);
+  const [confirmPending, setConfirmPending] = useState(false);
   const [error, setError] = useState("");
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const { active: comingSoon, requestAccess } = useComingSoon();
@@ -3773,23 +3794,33 @@ Welcome aboard.
     setError("");
     setSubmitting(true);
 
+    // Profile fields travel with the sign-up; the database trigger
+    // (private.handle_new_user) creates the providers row linked to the
+    // new account's auth user ID. No client-side insert under RLS.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: form.email,
       password: form.password,
-      options: { data: { role: "provider" } },
+      options: {
+        data: {
+          role: "provider",
+          practice_name: form.practiceName || "",
+          contact_name: form.contactName || "",
+          phone: form.phone || "",
+          specialty: form.specialty || "",
+        },
+      },
     });
 
     if (signUpError) { setError(signUpError.message); setSubmitting(false); return; }
 
-    await supabase.from("providers").insert({
-      email: form.email,
-      practice_name: form.practiceName,
-      contact_name: form.contactName,
-      phone: form.phone,
-      specialty: form.specialty,
-    });
-
     setSubmitting(false);
+
+    // "Confirm email" on: no session until the user clicks the emailed link.
+    if (!data?.session) {
+      setConfirmPending(true);
+      return;
+    }
+
     setShowEmail(true);
     setTimeout(() => {
       onRegistered({ email: form.email, practiceName: form.practiceName, contactName: form.contactName });
@@ -3807,7 +3838,15 @@ Welcome aboard.
           </div>
         </div>
         <div className="card-body">
-          {showEmail ? (
+          {confirmPending ? (
+            <div style={{ textAlign: "center", padding: "16px 0" }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>📧</div>
+              <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Confirm your email</div>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                {"We sent a confirmation link to "}<strong>{form.email}</strong>{". Click the link in that email, then sign in through Provider Sign In to access your dashboard."}
+              </div>
+            </div>
+          ) : showEmail ? (
             <div style={{ textAlign: "center", padding: "16px 0" }}>
               <div style={{ fontSize: 48, marginBottom: 16 }}>🎉</div>
               <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Account created!</div>
@@ -5048,114 +5087,50 @@ function PatientAccountPortal({ user, onSignOut }) {
 
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
 // ── INTERNAL ADMIN (hidden route: ?admin=1) ──
-// NOTE: this is a simple shared-passcode gate for internal use during the demo/beta phase.
-// It is not real authentication and should be replaced with proper admin auth before real patient data flows.
-// ─── ADMIN AUTH ───────────────────────────────────────────────────────────────
-// Username + bcrypt-style hashed passwords. To add a user: generate a hash with
-// the hashAdminPassword() utility below, paste the result into ADMIN_USERS.
-// Sessions are kept in sessionStorage — logging out or closing the tab clears access.
-// To rotate a password: update the hash here and redeploy.
+// Admin access runs through Supabase Auth. An account is an admin only if its
+// auth user ID is listed in public.admins (managed in Supabase, not here).
+// Every admin read or write of PHI is enforced server-side by RLS through
+// private.is_admin() — this console never decides access on its own.
 
-// Simple but safe client-side hash — SHA-256 via Web Crypto, salted per-user.
-// Not bcrypt, but appropriate for a single-file internal tool pre-Supabase auth.
-async function hashPassword(password, salt) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(salt + password + "prism_admin_2026");
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+// Remove credential hashes stored by the pre-v41 browser-based admin login.
+const LEGACY_ADMIN_USERS_KEY = "prism_admin_users_v2";
+function clearLegacyAdminStore() {
+  try { localStorage.removeItem(LEGACY_ADMIN_USERS_KEY); } catch {}
 }
 
-// ── Admin user store ──────────────────────────────────────────────────────────
-// Each entry: { username, displayName, salt, hash }
-// hash = SHA-256(salt + password + "prism_admin_2026")
-// Default credentials: username "justin" / password "PrismAdmin2026!"
-// CHANGE THE PASSWORD after first login by updating the hash below.
-// To generate a new hash, open the browser console and run:
-//   hashPassword("yourNewPassword", "yourSalt").then(console.log)
-// (copy the hashPassword function above into the console first)
+// Per-tab sign-in marker: an admin session ends when the tab closes or after 8 hours.
+const ADMIN_SESSION_KEY = "prism_admin_session_v2";
+const ADMIN_SESSION_MAX_MS = 8 * 60 * 60 * 1000;
 
-// Bump this key version any time you need to force-reset all browsers' stored credentials.
-const ADMIN_USERS_KEY = "prism_admin_users_v2";
-
-// Canonical default users — the source of truth baked into the code.
-// If a stored user's hash matches an old placeholder, it gets replaced with this.
-// To rotate a password: recompute the hash (see hashPassword above) and update here,
-// then bump ADMIN_USERS_KEY to force all browsers to pick up the new credentials.
-const ADMIN_DEFAULTS = [
-  {
-    username: "justin",
-    displayName: "Justin",
-    salt: "prism_salt_j1",
-    // SHA-256("prism_salt_j1" + "PrismAdmin2026!" + "prism_admin_2026")
-    hash: "fbb2956ecf78f2a1daeb2319c4544f7a9ed598ecb0d6934ff1b992bfac4d19c1",
-    role: "owner",
-    createdAt: "2026-07-20",
-  }
-];
-
-// Known bad placeholder hashes that should never authenticate anyone.
-const PLACEHOLDER_HASHES = new Set([
-  "a6b3c9d2e5f1a8b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6",
-]);
-
-function getAdminUsers() {
-  let users = [];
-  try {
-    const stored = localStorage.getItem(ADMIN_USERS_KEY);
-    if (stored) users = JSON.parse(stored);
-  } catch {}
-
-  // Reconcile: for every default user, if their stored entry has a placeholder
-  // hash (or they're missing entirely), replace with the canonical default.
-  let changed = false;
-  const reconciled = [...users];
-  for (const def of ADMIN_DEFAULTS) {
-    const idx = reconciled.findIndex(u => u.username === def.username);
-    if (idx === -1) {
-      // User missing from storage entirely — add canonical version
-      reconciled.push(def);
-      changed = true;
-    } else if (PLACEHOLDER_HASHES.has(reconciled[idx].hash)) {
-      // Stored hash is a known bad placeholder — overwrite with correct hash
-      reconciled[idx] = { ...reconciled[idx], hash: def.hash, salt: def.salt };
-      changed = true;
-    }
-  }
-  if (changed) {
-    try { localStorage.setItem(ADMIN_USERS_KEY, JSON.stringify(reconciled)); } catch {}
-  }
-  return reconciled;
-}
-
-function saveAdminUsers(users) {
-  try { localStorage.setItem(ADMIN_USERS_KEY, JSON.stringify(users)); } catch {}
-}
-
-const ADMIN_SESSION_KEY = "prism_admin_session_v1";
-
-function getAdminSession() {
+function adminMarkerValid() {
   try {
     const s = sessionStorage.getItem(ADMIN_SESSION_KEY);
-    if (!s) return null;
-    const parsed = JSON.parse(s);
-    // Sessions expire after 8 hours
-    if (Date.now() - parsed.loginAt > 8 * 60 * 60 * 1000) {
-      sessionStorage.removeItem(ADMIN_SESSION_KEY);
-      return null;
-    }
-    return parsed;
-  } catch { return null; }
+    if (!s) return false;
+    const { loginAt } = JSON.parse(s);
+    return Date.now() - loginAt <= ADMIN_SESSION_MAX_MS;
+  } catch { return false; }
 }
 
-function setAdminSession(user) {
-  try {
-    sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ ...user, loginAt: Date.now() }));
-  } catch {}
+function setAdminMarker() {
+  try { sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ loginAt: Date.now() })); } catch {}
 }
 
 function clearAdminSession() {
   try { sessionStorage.removeItem(ADMIN_SESSION_KEY); } catch {}
+}
+
+// Returns the admin session for a signed-in user, or null if the user is not
+// an admin. RLS lets a signed-in user read only their own row in public.admins.
+async function loadAdminSession(user) {
+  if (!user) return null;
+  const { data, error } = await supabase
+    .from("admins")
+    .select("user_id, label")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (error || !data) return null;
+  const displayName = (data.label && data.label.trim()) || user.email || "Admin";
+  return { userId: user.id, email: user.email, username: user.email, displayName };
 }
 
 // ─── ADMIN LOGIN SCREEN ───────────────────────────────────────────────────────
@@ -5222,23 +5197,38 @@ const ADMIN_LOGIN_STYLES = `
 `;
 
 function AdminLogin({ onAuthed }) {
-  const [username, setUsername] = useState("");
+  const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [error, setError]       = useState("");
   const [loading, setLoading]   = useState(false);
   const [showPw, setShowPw]     = useState(false);
 
   const handleSubmit = async () => {
-    if (!username.trim() || !password) { setError("Enter your username and password."); return; }
+    if (!email.trim() || !password) { setError("Enter your email and password."); return; }
     setLoading(true); setError("");
     try {
-      const users = getAdminUsers();
-      const user  = users.find(u => u.username.toLowerCase() === username.trim().toLowerCase());
-      if (!user) { setError("Incorrect username or password."); setLoading(false); return; }
-      const hash = await hashPassword(password, user.salt);
-      if (hash !== user.hash) { setError("Incorrect username or password."); setLoading(false); return; }
-      setAdminSession({ username: user.username, displayName: user.displayName, role: user.role });
-      onAuthed({ username: user.username, displayName: user.displayName, role: user.role });
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (signInError || !data?.user) {
+        setError(!signInError || signInError.message === "Invalid login credentials"
+          ? "Incorrect email or password."
+          : signInError.message);
+        setLoading(false);
+        return;
+      }
+      const adminSession = await loadAdminSession(data.user);
+      if (!adminSession) {
+        await supabase.auth.signOut();
+        setError("This account does not have admin access.");
+        setLoading(false);
+        return;
+      }
+      setAdminMarker();
+      setLoading(false);
+      onAuthed(adminSession);
+      return;
     } catch { setError("Something went wrong. Try again."); }
     setLoading(false);
   };
@@ -5266,10 +5256,10 @@ function AdminLogin({ onAuthed }) {
         <div className="adm-body">
           {error && <div className="adm-error"><span>⚠</span>{error}</div>}
           <div className="adm-field">
-            <label className="adm-label">Username</label>
-            <input className={`adm-input${error ? " error" : ""}`} type="text"
-              placeholder="Your username" value={username}
-              onChange={e => { setUsername(e.target.value); setError(""); }}
+            <label className="adm-label">Email</label>
+            <input className={`adm-input${error ? " error" : ""}`} type="email"
+              placeholder="you@prism-patient.com" value={email}
+              onChange={e => { setEmail(e.target.value); setError(""); }}
               onKeyDown={e => e.key === "Enter" && handleSubmit()}
               autoComplete="username" autoFocus />
           </div>
@@ -5491,15 +5481,6 @@ function AdminDashboard({ session, onSignOut }) {
   const [toasts, setToasts] = useState([]);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
 
-  // User management state
-  const [adminUsers, setAdminUsers] = useState(() => getAdminUsers());
-  const [newUsername, setNewUsername] = useState("");
-  const [newDisplayName, setNewDisplayName] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [umMsg, setUmMsg] = useState(null); // { type: "success"|"error", text }
-  const [addingUser, setAddingUser] = useState(false);
-  const [removeTarget, setRemoveTarget] = useState(null);
-
   // Mirror the active admin section to the URL (/admin/<section>) and
   // support Back/Forward between sections.
   useEffect(() => {
@@ -5588,39 +5569,6 @@ function AdminDashboard({ session, onSignOut }) {
     setActioning(null);
   };
 
-  // User management
-  const handleAddUser = async () => {
-    if (!newUsername.trim() || !newDisplayName.trim() || !newPassword) {
-      setUmMsg({ type: "error", text: "Fill in all fields." }); return;
-    }
-    if (adminUsers.find(u => u.username.toLowerCase() === newUsername.trim().toLowerCase())) {
-      setUmMsg({ type: "error", text: "Username already exists." }); return;
-    }
-    setAddingUser(true);
-    const salt = `prism_salt_${newUsername.trim().toLowerCase()}_${Date.now()}`;
-    const hash = await hashPassword(newPassword, salt);
-    const updated = [...adminUsers, {
-      username: newUsername.trim().toLowerCase(),
-      displayName: newDisplayName.trim(),
-      salt, hash, role: "admin",
-      createdAt: new Date().toISOString().slice(0, 10),
-    }];
-    saveAdminUsers(updated);
-    setAdminUsers(updated);
-    setNewUsername(""); setNewDisplayName(""); setNewPassword("");
-    setUmMsg({ type: "success", text: `User "${newUsername.trim()}" added.` });
-    setAddingUser(false);
-  };
-
-  const handleRemoveUser = (username) => {
-    if (username === session.username) { setUmMsg({ type: "error", text: "You can't remove your own account." }); return; }
-    const updated = adminUsers.filter(u => u.username !== username);
-    saveAdminUsers(updated);
-    setAdminUsers(updated);
-    setRemoveTarget(null);
-    setUmMsg({ type: "success", text: `User "${username}" removed.` });
-  };
-
   const navItems = [
     { id: "overview",     icon: "◈",  label: "Overview" },
     { id: "applications", icon: "📋", label: "Applications" },
@@ -5628,7 +5576,7 @@ function AdminDashboard({ session, onSignOut }) {
     { id: "patients",     icon: "👤", label: "Patients" },
     { id: "providers",    icon: "🏥", label: "Providers" },
     { id: "referrals",    icon: "🔗", label: "Referrals" },
-    { id: "users",        icon: "🔑", label: "Admin Users" },
+    { id: "users",        icon: "🔑", label: "Admin Access" },
   ];
 
   const approvedRequests = requests.filter(r => r.autopay_status === "active").length;
@@ -5666,7 +5614,7 @@ function AdminDashboard({ session, onSignOut }) {
       <div className="ad-main">
         <div className="ad-topbar">
           <div>
-            <div className="ad-tb-title">{{ overview: "Platform Overview", applications: "Patient Applications", autopay: "Autopay Requests", patients: "Patients", providers: "Providers", referrals: "Referrals", users: "Admin Users" }[view]}</div>
+            <div className="ad-tb-title">{{ overview: "Platform Overview", applications: "Patient Applications", autopay: "Autopay Requests", patients: "Patients", providers: "Providers", referrals: "Referrals", users: "Admin Access" }[view]}</div>
             <div className="ad-tb-sub">Prism Patient · Internal Admin Console</div>
           </div>
           <div className="ad-tb-right">
@@ -5922,58 +5870,33 @@ function AdminDashboard({ session, onSignOut }) {
               </div>
             </>}
 
-            {/* ── ADMIN USERS ── */}
+            {/* ── ADMIN ACCESS ── */}
             {view === "users" && <>
               <div className="ad-panel" style={{ marginBottom: 14 }}>
-                <div className="ad-ph"><div><div className="ad-ph-title">Add Admin User</div><div className="ad-ph-sub">Credentials are hashed and stored locally in this browser</div></div></div>
-                <div className="ad-pb">
-                  {umMsg && <div className={umMsg.type === "success" ? "ad-success" : "ad-err"}>{umMsg.text}</div>}
-                  <div className="ad-um-form">
-                    <div className="ad-um-row">
-                      <div className="ad-um-field">
-                        <label>Username</label>
-                        <input className="ad-um-input" type="text" placeholder="e.g. sarah" value={newUsername} onChange={e => { setNewUsername(e.target.value); setUmMsg(null); }} />
-                      </div>
-                      <div className="ad-um-field">
-                        <label>Display Name</label>
-                        <input className="ad-um-input" type="text" placeholder="e.g. Sarah" value={newDisplayName} onChange={e => { setNewDisplayName(e.target.value); setUmMsg(null); }} />
-                      </div>
-                    </div>
-                    <div className="ad-um-field" style={{ marginBottom: 12 }}>
-                      <label>Password</label>
-                      <input className="ad-um-input" type="password" placeholder="Choose a strong password" value={newPassword} onChange={e => { setNewPassword(e.target.value); setUmMsg(null); }} />
-                    </div>
-                    <button className="ad-btn ad-btn-teal" onClick={handleAddUser} disabled={addingUser}>{addingUser ? "Adding…" : "Add User →"}</button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="ad-panel">
-                <div className="ad-ph"><div><div className="ad-ph-title">Current Admin Users</div><div className="ad-ph-sub">{adminUsers.length} user{adminUsers.length !== 1 ? "s" : ""}</div></div></div>
+                <div className="ad-ph"><div><div className="ad-ph-title">Signed-In Admin</div><div className="ad-ph-sub">Supabase Auth account with admin access</div></div></div>
                 <table className="ad-tbl">
-                  <thead><tr><th>Username</th><th>Display Name</th><th>Role</th><th>Added</th><th></th></tr></thead>
+                  <thead><tr><th>Name</th><th>Email</th><th>Access</th></tr></thead>
                   <tbody>
-                    {adminUsers.map(u => (
-                      <tr key={u.username}>
-                        <td><div className="ad-tbl-name">{u.username}</div>{u.username === session.username && <span style={{ fontSize: 10, color: "#3DD9CC", marginLeft: 6 }}>you</span>}</td>
-                        <td style={{ fontSize: 12.5 }}>{u.displayName}</td>
-                        <td><span className={`ad-pill ${u.role === "owner" ? "ad-pill-a" : "ad-pill-t"}`}>{u.role}</span></td>
-                        <td style={{ fontSize: 11, color: "#2A5070" }}>{u.createdAt}</td>
-                        <td>
-                          {u.username !== session.username && (
-                            <button className="ad-btn ad-btn-danger" style={{ fontSize: 11 }} onClick={() => setRemoveTarget(u.username)}>Remove</button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                    <tr>
+                      <td><div className="ad-tbl-name">{session.displayName}</div></td>
+                      <td style={{ fontSize: 12.5 }}>{session.email}</td>
+                      <td><span className="ad-pill ad-pill-t">admin</span></td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
 
-              <div style={{ marginTop: 14, padding: "12px 16px", background: "#0C2640", border: "1px solid #1C3A55", borderRadius: 10, fontSize: 12, color: "#4A7A96", lineHeight: 1.6 }}>
-                <strong style={{ color: "#7FA8C0" }}>Note:</strong> Admin credentials are stored in <code style={{ color: "#3DD9CC", fontSize: 11 }}>localStorage</code> in this browser only.
-                When Supabase auth is wired in, this will move to a proper admin table with server-side session management.
-                Until then, credentials are SHA-256 hashed (salted) — not plaintext.
+              <div className="ad-panel">
+                <div className="ad-ph"><div><div className="ad-ph-title">Managing Admin Access</div><div className="ad-ph-sub">Admin access is granted and removed in Supabase, not from this console</div></div></div>
+                <div className="ad-pb" style={{ fontSize: 12.5, color: "#7FA8C0", lineHeight: 1.7 }}>
+                  <div style={{ marginBottom: 10 }}><strong style={{ color: "#C8DDEB" }}>Add an admin</strong></div>
+                  <div>1. Supabase → Authentication → Users → Add user (email + password, auto-confirm).</div>
+                  <div style={{ marginBottom: 6 }}>2. SQL Editor → run:</div>
+                  <code style={{ display: "block", background: "#0C2640", border: "1px solid #1C3A55", borderRadius: 8, padding: "10px 12px", color: "#3DD9CC", fontSize: 11.5, whiteSpace: "pre-wrap", marginBottom: 14 }}>{"insert into public.admins (user_id, label)\n  select id, 'Full Name' from auth.users where email = 'person@prism-patient.com';"}</code>
+                  <div style={{ marginBottom: 10 }}><strong style={{ color: "#C8DDEB" }}>Remove an admin</strong></div>
+                  <code style={{ display: "block", background: "#0C2640", border: "1px solid #1C3A55", borderRadius: 8, padding: "10px 12px", color: "#3DD9CC", fontSize: 11.5, whiteSpace: "pre-wrap", marginBottom: 14 }}>{"delete from public.admins\n  where user_id = (select id from auth.users where email = 'person@prism-patient.com');"}</code>
+                  <div>Access is keyed on the account's auth user ID. Removing the row ends admin access to patient data on the next request.</div>
+                </div>
               </div>
             </>}
 
@@ -5998,27 +5921,47 @@ function AdminDashboard({ session, onSignOut }) {
         </div>
       )}
 
-      {/* Remove user confirm */}
-      {removeTarget && (
-        <div className="ad-overlay">
-          <div className="ad-dialog">
-            <h3>Remove "{removeTarget}"?</h3>
-            <p>This admin user will lose access immediately. This can't be undone.</p>
-            <div className="ad-dialog-row">
-              <button className="ad-btn ad-btn-ghost" onClick={() => setRemoveTarget(null)}>Cancel</button>
-              <button className="ad-btn ad-btn-danger" onClick={() => handleRemoveUser(removeTarget)}>Remove</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
 function AdminApp() {
-  const [session, setSession] = useState(() => getAdminSession());
-  const handleAuthed = (user) => { setAdminSession(user); setSession(user); };
-  const handleSignOut = () => { clearAdminSession(); setSession(null); };
+  const [session, setSession] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    clearLegacyAdminStore();
+    let active = true;
+    (async () => {
+      let adminSession = null;
+      try {
+        const { data: { session: authSession } } = await supabase.auth.getSession();
+        if (authSession?.user) {
+          const candidate = await loadAdminSession(authSession.user);
+          if (candidate && adminMarkerValid()) {
+            adminSession = candidate;
+          } else if (candidate) {
+            // New tab or past 8 hours: require a fresh admin sign-in.
+            clearAdminSession();
+            await supabase.auth.signOut();
+          }
+        }
+      } catch (e) { console.error("Admin session check:", e); }
+      if (active) { setSession(adminSession); setChecking(false); }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const handleAuthed = (adminSession) => { setSession(adminSession); };
+  const handleSignOut = async () => {
+    clearAdminSession();
+    try { await supabase.auth.signOut(); } catch {}
+    setSession(null);
+  };
+
+  if (checking) {
+    return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "DM Sans, sans-serif", color: "#64748B", fontSize: 14 }}>Checking admin session…</div>;
+  }
   if (!session) return <AdminLogin onAuthed={handleAuthed} />;
   return <AdminDashboard session={session} onSignOut={handleSignOut} />;
 }
@@ -6307,7 +6250,7 @@ function MainApp() {
                 Sign in to view your payment plans
               </button>
             </div>
-            <div id="intake-form" className="main"><IntakeForm onSubmit={handleIntakeSubmit} prefill={referralPrefill} storageKey="rpps_public_intake_draft" /></div>
+            <div id="intake-form" className="main"><IntakeForm onSubmit={handleIntakeSubmit} prefill={referralPrefill} storageKey="prism_public_intake_draft" /></div>
             <SiteFooter mode="patient" onNavigate={setPage} />
           </>
         )}
